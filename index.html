@@ -169,6 +169,16 @@
       .warn {
         color: var(--danger);
       }
+
+      .hint {
+        margin-top: 0.3rem;
+        color: #b8c8ff;
+        font-size: 0.82rem;
+      }
+
+      input:disabled {
+        opacity: 0.6;
+      }
     </style>
   </head>
   <body>
@@ -186,35 +196,40 @@
             <input id="nHands" type="number" min="1000" step="1000" value="100000" />
           </div>
           <div>
-            <label for="strategyMode">Player strategy mode</label>
+            <label for="strategyMode">Player decision strategy</label>
             <select id="strategyMode">
-              <option value="basic_lite" selected>basic_lite</option>
-              <option value="threshold">threshold</option>
+              <option value="basic_lite" selected>
+                Basic strategy (simple): stand on 12-16 vs dealer 2-6, otherwise hit
+              </option>
+              <option value="threshold">Fixed threshold: hit below T, stand at or above T</option>
             </select>
+            <div id="strategyHint" class="hint">
+              Basic strategy rules: hit on 0-11, stand on 17+, and on 12-16 stand only vs dealer 2-6.
+            </div>
           </div>
           <div>
-            <label for="threshold">Threshold T (if threshold mode)</label>
+            <label for="threshold">Threshold value T (used only for fixed-threshold strategy)</label>
             <input id="threshold" type="number" min="4" max="21" value="17" />
           </div>
           <div>
             <label for="blackjackPayout">Natural blackjack payout</label>
             <select id="blackjackPayout">
-              <option value="1.0" selected>1.0</option>
-              <option value="1.5">1.5</option>
+              <option value="1.0" selected>Normal win only (+1.0)</option>
+              <option value="1.5">Traditional blackjack bonus (+1.5)</option>
             </select>
           </div>
           <div>
-            <label for="logHands">Log individual hands to CSV</label>
+            <label for="logHands">Save each simulated hand for analysis</label>
             <select id="logHands">
-              <option value="false" selected>false</option>
-              <option value="true">true</option>
+              <option value="false" selected>No (faster)</option>
+              <option value="true">Yes (enables Excel download)</option>
             </select>
           </div>
         </div>
 
         <div class="row" style="margin-top: 0.9rem">
           <button id="runBtn">Run S17 + H17</button>
-          <button id="downloadBtn" disabled>Download Hand Log CSV</button>
+          <button id="downloadBtn" disabled>Download Hand Log (Excel)</button>
         </div>
         <div id="status" class="status">Ready.</div>
       </section>
@@ -248,7 +263,7 @@
 
     <script>
       const state = {
-        csvText: "",
+        excelText: "",
       };
 
       function drawCard() {
@@ -504,7 +519,7 @@
         document.getElementById("resultsArea").innerHTML = html;
       }
 
-      function logsToCsv(logs) {
+      function logsToExcelHtml(logs) {
         const header = [
           "dealer_rule",
           "dealer_upcard",
@@ -516,17 +531,28 @@
 
         const escapeCell = (v) => {
           const s = String(v);
-          if (s.includes(",") || s.includes('"') || s.includes("\n")) {
-            return '"' + s.replace(/"/g, '""') + '"';
-          }
-          return s;
+          return s
+            .replace(/&/g, "&amp;")
+            .replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;")
+            .replace(/"/g, "&quot;");
         };
 
-        const lines = [header.join(",")];
+        const rows = [];
+        rows.push("<tr>" + header.map((h) => `<th>${escapeCell(h)}</th>`).join("") + "</tr>");
         for (const row of logs) {
-          lines.push(header.map((col) => escapeCell(row[col])).join(","));
+          rows.push(
+            "<tr>" + header.map((col) => `<td>${escapeCell(row[col])}</td>`).join("") + "</tr>",
+          );
         }
-        return lines.join("\n");
+        return (
+          '<html xmlns:o="urn:schemas-microsoft-com:office:office" ' +
+          'xmlns:x="urn:schemas-microsoft-com:office:excel" ' +
+          'xmlns="http://www.w3.org/TR/REC-html40"><head>' +
+          '<meta charset="UTF-8"></head><body><table>' +
+          rows.join("") +
+          "</table></body></html>"
+        );
       }
 
       function getConfigFromForm() {
@@ -557,12 +583,29 @@
         };
       }
 
+      function refreshStrategyUi() {
+        const strategyMode = document.getElementById("strategyMode").value;
+        const thresholdInput = document.getElementById("threshold");
+        const strategyHint = document.getElementById("strategyHint");
+
+        const usingThreshold = strategyMode === "threshold";
+        thresholdInput.disabled = !usingThreshold;
+
+        if (usingThreshold) {
+          strategyHint.textContent =
+            "Fixed threshold rules: hit while your total is below T, stand when total is T or more.";
+        } else {
+          strategyHint.textContent =
+            "Basic strategy rules: hit on 0-11, stand on 17+, and on 12-16 stand only vs dealer 2-6.";
+        }
+      }
+
       async function runSimulation() {
         const statusEl = document.getElementById("status");
         const runBtn = document.getElementById("runBtn");
         const downloadBtn = document.getElementById("downloadBtn");
 
-        state.csvText = "";
+        state.excelText = "";
         downloadBtn.disabled = true;
 
         let cfg;
@@ -585,7 +628,7 @@
 
           if (cfg.log_hands) {
             const merged = s17.logs.concat(h17.logs);
-            state.csvText = logsToCsv(merged);
+            state.excelText = logsToExcelHtml(merged);
             downloadBtn.disabled = false;
           }
 
@@ -598,13 +641,15 @@
         }
       }
 
-      function downloadCsv() {
-        if (!state.csvText) return;
-        const blob = new Blob([state.csvText], { type: "text/csv;charset=utf-8;" });
+      function downloadExcel() {
+        if (!state.excelText) return;
+        const blob = new Blob([state.excelText], {
+          type: "application/vnd.ms-excel;charset=utf-8;",
+        });
         const url = URL.createObjectURL(blob);
         const a = document.createElement("a");
         a.href = url;
-        a.download = "blackjack_hand_log.csv";
+        a.download = "blackjack_hand_log.xls";
         document.body.appendChild(a);
         a.click();
         a.remove();
@@ -612,7 +657,9 @@
       }
 
       document.getElementById("runBtn").addEventListener("click", runSimulation);
-      document.getElementById("downloadBtn").addEventListener("click", downloadCsv);
+      document.getElementById("downloadBtn").addEventListener("click", downloadExcel);
+      document.getElementById("strategyMode").addEventListener("change", refreshStrategyUi);
+      refreshStrategyUi();
     </script>
   </body>
 </html>
