@@ -229,7 +229,7 @@
 
         <div class="row" style="margin-top: 0.9rem">
           <button id="runBtn">Run S17 + H17</button>
-          <button id="downloadBtn" disabled>Download Hand Log (Excel)</button>
+          <button id="downloadBtn" disabled>Download Results (Excel)</button>
         </div>
         <div id="status" class="status">Ready.</div>
       </section>
@@ -264,6 +264,7 @@
     <script>
       const state = {
         excelText: "",
+        lastSummary: null,
       };
 
       function drawCard() {
@@ -482,11 +483,30 @@
         return Number(value).toFixed(digits);
       }
 
+      function strategyLabel(mode) {
+        if (mode === "basic_lite") {
+          return "Basic strategy (simple)";
+        }
+        if (mode === "threshold") {
+          return "Fixed threshold";
+        }
+        return mode;
+      }
+
       function renderResults(resS17, resH17) {
         const delta = resS17.ev - resH17.ev;
         const seDelta = Math.sqrt(resS17.se * resS17.se + resH17.se * resH17.se);
         const deltaLow = delta - 1.96 * seDelta;
         const deltaHigh = delta + 1.96 * seDelta;
+
+        state.lastSummary = {
+          resS17,
+          resH17,
+          delta,
+          seDelta,
+          deltaLow,
+          deltaHigh,
+        };
 
         const html = `
           <table>
@@ -519,14 +539,29 @@
         document.getElementById("resultsArea").innerHTML = html;
       }
 
-      function logsToExcelHtml(logs) {
-        const header = [
+      function logsToExcelHtml(logs, summary, cfg) {
+        const handHeader = [
           "dealer_rule",
           "dealer_upcard",
           "player_final_total",
           "dealer_final_total",
           "outcome",
           "payoff",
+        ];
+
+        const metricRows = [
+          ["N", summary.resS17.n_hands, summary.resH17.n_hands],
+          ["Wins", summary.resS17.wins, summary.resH17.wins],
+          ["Losses", summary.resS17.losses, summary.resH17.losses],
+          ["Pushes", summary.resS17.pushes, summary.resH17.pushes],
+          ["p_win", summary.resS17.p_win, summary.resH17.p_win],
+          ["p_loss", summary.resS17.p_loss, summary.resH17.p_loss],
+          ["p_push", summary.resS17.p_push, summary.resH17.p_push],
+          ["EV", summary.resS17.ev, summary.resH17.ev],
+          ["Sample Std Dev (s)", summary.resS17.sample_std, summary.resH17.sample_std],
+          ["Standard Error (SE)", summary.resS17.se, summary.resH17.se],
+          ["95% CI low", summary.resS17.ci_low, summary.resH17.ci_low],
+          ["95% CI high", summary.resS17.ci_high, summary.resH17.ci_high],
         ];
 
         const escapeCell = (v) => {
@@ -539,11 +574,48 @@
         };
 
         const rows = [];
-        rows.push("<tr>" + header.map((h) => `<th>${escapeCell(h)}</th>`).join("") + "</tr>");
-        for (const row of logs) {
+        rows.push("<tr><th colspan='3'>Simulation Settings</th></tr>");
+        rows.push("<tr><td>Hands per dealer rule (N)</td><td colspan='2'>" + escapeCell(cfg.n_hands) + "</td></tr>");
+        rows.push(
+          "<tr><td>Strategy mode</td><td colspan='2'>" +
+            escapeCell(strategyLabel(cfg.strategy.mode)) +
+          "</td></tr>",
+        );
+        rows.push("<tr><td>Threshold T</td><td colspan='2'>" + escapeCell(cfg.strategy.threshold) + "</td></tr>");
+        rows.push("<tr><td>Natural blackjack payout</td><td colspan='2'>" + escapeCell(cfg.blackjack_payout) + "</td></tr>");
+        rows.push("<tr><td colspan='3'></td></tr>");
+
+        rows.push("<tr><th>Summary Statistic</th><th>S17</th><th>H17</th></tr>");
+        for (const row of metricRows) {
           rows.push(
-            "<tr>" + header.map((col) => `<td>${escapeCell(row[col])}</td>`).join("") + "</tr>",
+            "<tr>" +
+              `<td>${escapeCell(row[0])}</td>` +
+              `<td>${escapeCell(row[1])}</td>` +
+              `<td>${escapeCell(row[2])}</td>` +
+            "</tr>",
           );
+        }
+        rows.push("<tr><td colspan='3'></td></tr>");
+        rows.push(
+          "<tr><td>Delta EV (S17 - H17)</td><td colspan='2'>" + escapeCell(summary.delta) + "</td></tr>",
+        );
+        rows.push(
+          "<tr><td>Delta 95% CI low</td><td colspan='2'>" + escapeCell(summary.deltaLow) + "</td></tr>",
+        );
+        rows.push(
+          "<tr><td>Delta 95% CI high</td><td colspan='2'>" + escapeCell(summary.deltaHigh) + "</td></tr>",
+        );
+        rows.push("<tr><td colspan='3'></td></tr>");
+        rows.push("<tr><th colspan='6'>Per-hand Log Data</th></tr>");
+        if (logs.length === 0) {
+          rows.push("<tr><td colspan='6'>Hand logging was disabled for this run.</td></tr>");
+        } else {
+          rows.push("<tr>" + handHeader.map((h) => `<th>${escapeCell(h)}</th>`).join("") + "</tr>");
+          for (const row of logs) {
+            rows.push(
+              "<tr>" + handHeader.map((col) => `<td>${escapeCell(row[col])}</td>`).join("") + "</tr>",
+            );
+          }
         }
         return (
           '<html xmlns:o="urn:schemas-microsoft-com:office:office" ' +
@@ -606,6 +678,7 @@
         const downloadBtn = document.getElementById("downloadBtn");
 
         state.excelText = "";
+        state.lastSummary = null;
         downloadBtn.disabled = true;
 
         let cfg;
@@ -626,11 +699,9 @@
           const h17 = await simulateRule("H17", cfg, statusEl);
           renderResults(s17.summary, h17.summary);
 
-          if (cfg.log_hands) {
-            const merged = s17.logs.concat(h17.logs);
-            state.excelText = logsToExcelHtml(merged);
-            downloadBtn.disabled = false;
-          }
+          const merged = cfg.log_hands ? s17.logs.concat(h17.logs) : [];
+          state.excelText = logsToExcelHtml(merged, state.lastSummary, cfg);
+          downloadBtn.disabled = false;
 
           const sec = ((performance.now() - t0) / 1000).toFixed(2);
           statusEl.textContent = `Completed in ${sec}s`;
